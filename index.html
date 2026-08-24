@@ -30,7 +30,8 @@
 </style>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-<script src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"></script></head>
+<script src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"></script>
+</head>
 <body>
 <div id="root"></div>
 
@@ -396,7 +397,7 @@ function App(){
   const [draws,setDraws]=useState(null);
   const [loadErr,setLoadErr]=useState('');
   const [meta,setMeta]=useState(null);
-  const [tab,setTab]=useState('dash');
+  const [tab,setTab]=useState('pick');
   const [weights,setWeights]=useState(DEFAULT_W);
   const [bt,setBt]=useState(null);
   const [btRange,setBtRange]=useState(null);
@@ -463,6 +464,13 @@ function App(){
   },[draws]);
 
   const crowd=useMemo(()=>draws?fitCrowding(draws):null,[draws]);
+
+  /* أعلى 3 تركيبات — تُحسب تلقائياً عند فتح الصفحة */
+  const top3=useMemo(()=>{
+    if(!live)return null;
+    return generate(live.scored.slice(0,22).map(s=>s.n),live.scored,live.st,crowd,
+      {tries:25000,keep:3,avoidCrowd:true});
+  },[live,crowd]);
 
   const runBt=async r=>{
     setBusy('نُشغّل الاختبار سحبة بسحبة…'); setBtRange(r);
@@ -533,7 +541,7 @@ function App(){
     return steps;
   })();
 
-  const TABS=[['dash','اللوحة'],['filters','الفرضيات'],['numbers','الأرقام'],
+  const TABS=[['pick','الترشيح'],['dash','اللوحة'],['filters','الفرضيات'],['numbers','الأرقام'],
               ['combos','التركيبات'],['back','Backtesting'],['crowd','الازدحام']];
   const sig=bt&&Math.abs(bt.engMean-bt.rndMean)>2*bt.stderr;
 
@@ -568,6 +576,51 @@ function App(){
         color:C.amber,padding:'9px 18px',fontSize:12.5}}>{busy}</div>}
 
       <main style={{maxWidth:1040,margin:'0 auto',padding:'20px 16px 56px'}}>
+
+      {tab==='pick'&&<>
+        <div style={{textAlign:'center',padding:'14px 0 26px'}}>
+          <div style={{fontFamily:mono,fontSize:11,color:C.cyan,letterSpacing:'.14em'}}>
+            للسحب رقم {last.n+1}</div>
+          <h2 style={{fontSize:22,margin:'8px 0 6px',fontWeight:700}}>
+            أعلى 3 تركيبات بحسب درجات المحرك</h2>
+          <p style={{fontSize:12.5,color:C.dim,margin:0}}>
+            مبنية على {draws.length} سحبة · بعد السحب {last.n} ({last.date})</p>
+        </div>
+
+        {top3?top3.map((c,i)=>(
+          <section key={i} style={{background:C.panel,border:`1px solid ${C.line}`,
+            borderTop:`2px solid ${[C.cyan,C.violet,C.amber][i]}`,borderRadius:6,
+            padding:'22px 20px',marginBottom:14,textAlign:'center'}}>
+            <div style={{fontFamily:mono,fontSize:11,color:C.faint,marginBottom:14}}>
+              التركيبة {i+1}</div>
+            <div style={{display:'flex',gap:10,justifyContent:'center',flexWrap:'wrap',marginBottom:18}}>
+              {c.nums.map(n=><Ball key={n} n={n} size={54}
+                tone={['cyan','violet','amber'][i]}/>)}
+            </div>
+            <div style={{display:'flex',gap:22,justifyContent:'center',flexWrap:'wrap',
+              fontSize:11.5,color:C.dim}}>
+              <span>المجموع <b style={{fontFamily:mono,color:C.ink}}>{c.f.sum}</b></span>
+              <span>فردي/زوجي <b style={{fontFamily:mono,color:C.ink}}>{c.f.odd}/{6-c.f.odd}</b></span>
+              <span>منخفض/مرتفع <b style={{fontFamily:mono,color:C.ink}}>
+                {c.nums.filter(n=>n<=21).length}/{c.nums.filter(n=>n>21).length}</b></span>
+              <span>الدرجة <b style={{fontFamily:mono,color:[C.cyan,C.violet,C.amber][i]}}>
+                {(c.total*100).toFixed(1)}</b></span>
+            </div>
+          </section>
+        )):<p style={{textAlign:'center',color:C.faint,padding:40}}>نولّد التركيبات…</p>}
+
+        <section style={{border:`1px solid ${C.amber}55`,background:`${C.amber}0E`,
+          borderRadius:6,padding:'16px 20px',marginTop:20}}>
+          <p style={{margin:0,fontSize:12.5,color:C.dim,lineHeight:1.95}}>
+            <b style={{color:C.amber}}>اقرأ هذا قبل أن تلعب.</b> اختبرنا هذا المحرك على 1243 سحبة
+            حقيقية: متوسط إصاباته <b style={{fontFamily:mono,color:C.ink}}>0.863</b> رقم، ومتوسط
+            الاختيار العشوائي <b style={{fontFamily:mono,color:C.ink}}>0.856</b> — والفرق بينهما أصغر
+            من حدّ الضجيج الإحصائي. يعني هذه التركيبات الثلاث ليست أقرب للفوز من أي ثلاث تركيبات
+            تختارها بنفسك. احتمال الجائزة الأولى لأي تذكرة هو 1 من 5,245,786، ولا يتغيّر بأي تحليل.
+            لا تلعب بأكثر مما لا يضرّك خسارته.
+          </p>
+        </section>
+      </>}
 
       {tab==='dash'&&<>
         <Panel title={`السحب ${last.n} — ${last.date}`} sub="آخر نتيجة في الأرشيف" accent={C.cyan}>
