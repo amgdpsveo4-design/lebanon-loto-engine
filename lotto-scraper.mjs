@@ -20,9 +20,11 @@ import path from 'node:path';
 
 const BASE = 'https://www.lebanon-lotto.com/lebanese-loto-results/draw-number';
 const OUT = path.resolve('draws.json');
-const DELAY_MS = 500;          // احترام الخادم — لا تخفضه
+const DELAY_MS = 400;          // احترام الخادم — لا تخفضه
 const MAX_RETRIES = 3;
-const CONSECUTIVE_MISS_STOP = 6; // بعد 6 صفحات فارغة متتالية نعتبر أننا وصلنا النهاية
+// نتوقف فقط بعد كتلة فارغة طويلة، وبعد أن نكون وجدنا سحوبات فعلية.
+// (النسخة السابقة كانت تتوقف عند بداية الأرشيف لأن السحوبات القديمة جداً غير منشورة.)
+const CONSECUTIVE_MISS_STOP = 30;
 
 const UA = 'Mozilla/5.0 (compatible; LotoArchive/1.0)';
 
@@ -140,8 +142,10 @@ async function main() {
   console.log(`سنغطي المدى ${from} → ${latest}. متوقع الجديد: ${latest - have.size} صفحة تقريباً.\n`);
 
   const collected = [...existing];
-  let misses = 0;
-  let added = 0;
+  // الإصلاح الأساسي: لا نسمح بالتوقف المبكر قبل أن نجد سحوبات حقيقية
+  let foundAny = existing.length > 0;
+  let misses = 0, added = 0, skipped = 0, failed = 0;
+  const t0 = Date.now();
 
   for (let n = from; n <= latest; n++) {
     if (have.has(n)) continue;
@@ -150,24 +154,27 @@ async function main() {
     await sleep(DELAY_MS);
 
     if (result.error) {
-      console.error(`  سحب ${n}: فشل (${result.error}) — سنتخطاه.`);
+      failed++;
+      console.error(`  سحب ${n}: فشل الاتصال (${result.error}) — نتخطاه.`);
       continue;
     }
     if (result.missing) {
-      misses++;
-      if (n > highest && misses >= CONSECUTIVE_MISS_STOP) {
-        console.log(`\nتوقفنا عند ${n}: ${CONSECUTIVE_MISS_STOP} صفحات فارغة متتالية.`);
+      misses++; skipped++;
+      if (foundAny && misses >= CONSECUTIVE_MISS_STOP) {
+        console.log(`\nتوقفنا عند ${n}: ${CONSECUTIVE_MISS_STOP} صفحة فارغة متتالية بعد آخر سحب موجود.`);
         break;
       }
       continue;
     }
 
     misses = 0;
+    foundAny = true;
     collected.push(result.draw);
     added++;
 
-    if (added % 25 === 0) {
-      process.stdout.write(`  ${added} سحبة جديدة… (آخرها ${n} — ${result.draw.date})\n`);
+    if (added % 50 === 0) {
+      const el = Math.round((Date.now() - t0) / 1000);
+      console.log(`  ${added} سحبة… (آخرها ${n} — ${result.draw.date}) [${el} ثانية]`);
       await save(collected);
     }
   }
@@ -176,20 +183,16 @@ async function main() {
 
   const sorted = collected.sort((a, b) => a.n - b.n);
   console.log(`\n— تم —`);
-  console.log(`المجموع: ${sorted.length} سحبة (${added} جديدة)`);
-  if (sorted.length) {
-    console.log(`المدى: ${sorted[0].n} (${sorted[0].date}) → ${sorted.at(-1).n} (${sorted.at(-1).date})`);
-    const withBonus = sorted.filter((d) => d.bonus !== null).length;
-    const withWinners = sorted.filter((d) => d.winners).length;
-    console.log(`رقم مكمّل متاح في ${withBonus} سحبة، أعداد الفائزين في ${withWinners} سحبة.`);
-    const gaps = [];
-    for (let i = 1; i < sorted.length; i++) {
-      if (sorted[i].n !== sorted[i - 1].n + 1) gaps.push(`${sorted[i - 1].n}→${sorted[i].n}`);
-    }
-    if (gaps.length) console.log(`فجوات في الترقيم: ${gaps.slice(0, 10).join(', ')}${gaps.length > 10 ? '…' : ''}`);
+  console.log(`المجموع: ${sorted.length} سحبة (${added} جديدة، ${skipped} صفحة فارغة، ${failed} فشل اتصال)`);
+  if (!sorted.length) {
+    console.error('تحذير: لم يُجلب أي سحب. تحقق من أن الموقع المصدر متاح.');
+    process.exit(1);
   }
+  console.log(`المدى: ${sorted[0].n} (${sorted[0].date}) → ${sorted[sorted.length-1].n} (${sorted[sorted.length-1].date})`);
+  const withBonus = sorted.filter((d) => d.bonus !== null).length;
+  const withWinners = sorted.filter((d) => d.winners).length;
+  console.log(`رقم مكمّل متاح في ${withBonus} سحبة، أعداد الفائزين في ${withWinners} سحبة.`);
   console.log(`\nالملف: ${OUT}`);
-  console.log(`ارفعه في المحرك عبر زر "استيراد الأرشيف".`);
 }
 
 async function save(rows) {
