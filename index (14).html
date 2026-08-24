@@ -1,0 +1,927 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>محرك اللوتو اللبناني — تحليل وتصفية</title>
+<meta name="description" content="تحليل إحصائي لأرشيف اللوتو اللبناني 6/42 مع اختبار تاريخي للفرضيات">
+<style>
+  :root{
+    --bg:#0A0E12; --panel:#121A20; --panel2:#0E151A; --line:#1E2C35;
+    --ink:#E3EDF1; --dim:#7C949F; --faint:#4A5C66;
+    --cyan:#3EC8B4; --amber:#DBA75B; --red:#CE5B4F; --violet:#8E7CC3;
+    --mono: ui-monospace,"SF Mono","Cascadia Mono",Menlo,monospace;
+    --sans: "Segoe UI",Tahoma,"Noto Sans Arabic",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);
+       -webkit-font-smoothing:antialiased}
+  button{font-family:var(--sans)}
+  code{font-family:var(--mono)}
+  table{border-collapse:collapse}
+  ::-webkit-scrollbar{width:9px;height:9px}
+  ::-webkit-scrollbar-track{background:var(--panel2)}
+  ::-webkit-scrollbar-thumb{background:var(--line);border-radius:5px}
+  input[type=range]{accent-color:var(--cyan)}
+  .tabbar::-webkit-scrollbar{height:0}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+  :focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+</style>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useMemo, useEffect, useRef } = React;
+
+/* ═══════════════════════════════════════════════════════════════
+   ثوابت اللعبة — اللوتو اللبناني 6/42
+   ═══════════════════════════════════════════════════════════════ */
+const POOL = 42, PICK = 6;
+const BASE_EV = (PICK * PICK) / POOL;          // 0.857
+const V = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const C = { cyan:'#3EC8B4', amber:'#DBA75B', red:'#CE5B4F', violet:'#8E7CC3',
+            ink:'#E3EDF1', dim:'#7C949F', faint:'#4A5C66', line:'#1E2C35',
+            panel:'#121A20', panel2:'#0E151A' };
+const mono = 'var(--mono)';
+
+/* ── أدوات إحصائية ───────────────────────────────────────────── */
+const median=a=>{if(!a.length)return 0;const s=[...a].sort((x,y)=>x-y),m=s.length>>1;
+  return s.length%2?s[m]:(s[m-1]+s[m])/2;};
+const mean=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:0;
+const sd=a=>{if(a.length<2)return 0;const m=mean(a);
+  return Math.sqrt(a.reduce((s,x)=>s+(x-m)**2,0)/(a.length-1));};
+const pct=(a,p)=>{if(!a.length)return 0;const s=[...a].sort((x,y)=>x-y);
+  return s[Math.min(s.length-1,Math.floor(p/100*s.length))];};
+const rank01=v=>{const idx=v.map((x,i)=>[x,i]).sort((a,b)=>a[0]-b[0]);
+  const o=new Array(v.length).fill(0);
+  idx.forEach(([,i],r)=>{o[i]=v.length>1?r/(v.length-1):.5});return o;};
+const nCr=(n,r)=>{let x=1;for(let i=0;i<r;i++)x=x*(n-i)/(i+1);return x;};
+const hyper=(k,d=PICK,w=PICK,p=POOL)=>nCr(w,k)*nCr(p-w,d-k)/nCr(p,d);
+const pad=n=>String(n).padStart(2,'0');
+
+/* ═══════════════════════════════════════════════════════════════
+   محرك الإحصاء التراكمي — الحالة لا ترى إلا الماضي
+   ═══════════════════════════════════════════════════════════════ */
+function newState(){return{
+  i:0, freq:new Float64Array(POOL+1), last:new Int32Array(POOL+1).fill(-1),
+  gapSum:new Float64Array(POOL+1), gapSq:new Float64Array(POOL+1),
+  gapMax:new Float64Array(POOL+1), gapN:new Float64Array(POOL+1),
+  gapsAll:Array.from({length:POOL+1},()=>[]),
+  pair:new Float64Array((POOL+1)*(POOL+1)),
+  monFreq:new Float64Array(POOL+1), thuFreq:new Float64Array(POOL+1),
+  monN:0, thuN:0, recent:[], sums:[], odds:[], lows:[],
+};}
+
+function absorb(st,d){
+  const nums=d.numbers, isMon=new Date(d.date+'T00:00:00').getDay()===1;
+  isMon?st.monN++:st.thuN++;
+  for(const k of nums){
+    st.freq[k]++;
+    if(st.last[k]>=0){
+      const g=st.i-st.last[k];
+      st.gapSum[k]+=g; st.gapSq[k]+=g*g; st.gapN[k]++;
+      if(g>st.gapMax[k])st.gapMax[k]=g;
+      if(st.gapsAll[k].length<400)st.gapsAll[k].push(g);
+    }
+    st.last[k]=st.i;
+    isMon?st.monFreq[k]++:st.thuFreq[k]++;
+  }
+  for(let a=0;a<PICK;a++)for(let b=a+1;b<PICK;b++)
+    st.pair[nums[a]*(POOL+1)+nums[b]]++;
+  st.sums.push(nums.reduce((x,y)=>x+y,0));
+  st.odds.push(nums.filter(n=>n%2).length);
+  st.lows.push(nums.filter(n=>n<=21).length);
+  st.recent.push(nums); if(st.recent.length>100)st.recent.shift();
+  st.i++;
+}
+const pairCount=(st,a,b)=>st.pair[Math.min(a,b)*(POOL+1)+Math.max(a,b)];
+
+function numberMetrics(st){
+  const out=[];
+  for(let k=1;k<=POOL;k++){
+    const since=st.last[k]<0?st.i:st.i-st.last[k];
+    const mGap=st.gapN[k]?st.gapSum[k]/st.gapN[k]:POOL/PICK;
+    const varG=st.gapN[k]>1?Math.max(0,st.gapSq[k]/st.gapN[k]-mGap*mGap):0;
+    out.push({n:k,freq:st.freq[k],since,meanGap:mGap,medGap:median(st.gapsAll[k]),
+              maxGap:st.gapMax[k],sdGap:Math.sqrt(varG),overdue:mGap>0?since/mGap:0});
+  }
+  return out;
+}
+/* التصنيف مشتق من توزيع البيانات نفسها، لا من عتبات ثابتة */
+function classify(m){
+  const s=m.map(x=>x.since), q=[pct(s,30),pct(s,60),pct(s,85)];
+  return m.map(x=>({...x,band:x.since<=q[0]?'hot':x.since<=q[1]?'normal':x.since<=q[2]?'cold':'vcold'}));
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   محرك الدرجات
+   ═══════════════════════════════════════════════════════════════ */
+const FILTERS=[
+  {id:'freq',label:'التكرار'},{id:'recency',label:'الحداثة'},
+  {id:'overdue',label:'التأخر النسبي'},{id:'prev',label:'السحب السابق'},
+  {id:'prev2',label:'السحب قبل السابق'},{id:'cold',label:'الأرقام الباردة'},
+  {id:'pair',label:'ارتباط الأزواج'},{id:'triple',label:'ارتباط الثلاثيات'},
+  {id:'dist',label:'الزخم القريب'},{id:'pattern',label:'نمط اليوم'},
+];
+const DEFAULT_W=Object.fromEntries(FILTERS.map(f=>[f.id,1]));
+
+function scoreNumbers(st,prev,prev2,w,nextIsMon){
+  const m=numberMetrics(st);
+  const p1=new Set(prev||[]), p2=new Set(prev2||[]);
+  const raw={
+    freq:m.map(x=>x.freq),
+    recency:m.map(x=>-x.since),
+    overdue:m.map(x=>x.overdue),
+    prev:m.map(x=>p1.has(x.n)?0:1),
+    prev2:m.map(x=>p2.has(x.n)?0:1),
+    cold:m.map(x=>x.since),
+    pair:m.map(x=>(prev||[]).reduce((s,p)=>s+pairCount(st,x.n,p),0)),
+    triple:m.map(x=>{let b=0;const P=prev||[];
+      for(const p of P)for(const q of P){if(p>=q||p===x.n||q===x.n)continue;
+        b+=Math.min(pairCount(st,x.n,p),pairCount(st,x.n,q));}return b;}),
+    dist:m.map(x=>st.recent.reduce((s,d)=>s+(d.includes(x.n)?1:0),0)),
+    pattern:m.map(x=>nextIsMon?(st.monN?st.monFreq[x.n]/st.monN:0)
+                              :(st.thuN?st.thuFreq[x.n]/st.thuN:0)),
+  };
+  const R={}; let wSum=0;
+  for(const f of FILTERS){R[f.id]=rank01(raw[f.id]); wSum+=Math.abs(w[f.id]??0);}
+  if(!wSum)wSum=1;
+  return m.map((x,i)=>{
+    const parts={}; let t=0;
+    for(const f of FILTERS){const s=R[f.id][i]*100; parts[f.id]=s; t+=(w[f.id]??0)*s;}
+    return {...x,parts,score:t/wSum};
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Backtesting — مشي للأمام بلا تسريب
+   ═══════════════════════════════════════════════════════════════ */
+function backtest(draws,w,opts={}){
+  const from=opts.from??200, to=opts.to??draws.length, ps=opts.poolSize??PICK;
+  const st=newState();
+  const eng=new Array(PICK+1).fill(0), rnd=new Array(PICK+1).fill(0);
+  const hits=[], rows=[]; let eS=0,rS=0,cnt=0;
+
+  for(let i=0;i<to;i++){
+    if(i>=from){
+      const nextIsMon=new Date(draws[i].date+'T00:00:00').getDay()===1;
+      const sc=scoreNumbers(st,draws[i-1]?.numbers,draws[i-2]?.numbers,w,nextIsMon)
+                .sort((a,b)=>b.score-a.score);
+      const picked=sc.slice(0,ps).map(s=>s.n);
+      const actual=new Set(draws[i].numbers);
+      const hit=picked.filter(n=>actual.has(n)).length;
+      eng[Math.min(hit,PICK)]++; eS+=hit; hits.push(hit);
+
+      const bag=Array.from({length:POOL},(_,z)=>z+1);
+      for(let z=bag.length-1;z>0;z--){const j=Math.random()*(z+1)|0;[bag[z],bag[j]]=[bag[j],bag[z]];}
+      const rh=bag.slice(0,ps).filter(n=>actual.has(n)).length;
+      rnd[Math.min(rh,PICK)]++; rS+=rh;
+
+      cnt++;
+      if(rows.length<600)rows.push({n:draws[i].n,date:draws[i].date,pred:picked,
+        actual:draws[i].numbers,hit,rHit:rh});
+    }
+    absorb(st,draws[i]);
+  }
+  const s=sd(hits);
+  return {count:cnt,poolSize:ps,engMean:cnt?eS/cnt:0,rndMean:cnt?rS/cnt:0,
+    engMedian:median(hits),engMax:hits.length?Math.max(...hits):0,
+    engDist:eng,rndDist:rnd,sd:s,stderr:cnt?s/Math.sqrt(cnt):0,rows};
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   نموذج الازدحام — الجزء القابل للتحسين فعلياً
+   ═══════════════════════════════════════════════════════════════ */
+const comboFeatures=nums=>{
+  const s=[...nums].sort((a,b)=>a-b); let consec=0;
+  for(let i=1;i<s.length;i++)if(s[i]===s[i-1]+1)consec++;
+  return {le31:s.filter(n=>n<=31).length,consec,
+    sum:s.reduce((a,b)=>a+b,0),odd:s.filter(n=>n%2).length,
+    spread:s[5]-s[0],le12:s.filter(n=>n<=12).length};
+};
+const FK=['le31','consec','odd','le12'];
+const FK_LABEL={le31:'أرقام ≤ 31 (تواريخ)',consec:'أزواج متتالية',
+                odd:'عدد الأرقام الفردية',le12:'أرقام ≤ 12 (أشهر)'};
+
+function fitCrowding(draws){
+  const u=draws.filter(d=>d.winners&&d.winners[4]>0);
+  if(u.length<200)return null;
+  const w3=u.map(d=>d.winners[4]);
+  const y=u.map((_,i)=>{
+    const med=median(w3.slice(Math.max(0,i-10),Math.min(w3.length,i+11)));
+    return med>0?Math.log(w3[i]/med):0;});
+  const X=u.map(d=>comboFeatures(d.numbers));
+  const cols=FK.map(k=>X.map(f=>f[k]));
+  const mu=cols.map(mean), sg=cols.map(c=>sd(c)||1);
+  const Z=cols.map((c,j)=>c.map(v=>(v-mu[j])/sg[j]));
+  const yM=mean(y);
+  const coef=Z.map(z=>{const zM=mean(z);let n=0,d=0;
+    for(let i=0;i<z.length;i++){n+=(z[i]-zM)*(y[i]-yM);d+=(z[i]-zM)**2;}
+    return d?n/d:0;});
+  const zM=Z.map(mean);
+  const pred=y.map((_,i)=>yM+coef.reduce((s,c,j)=>s+c*(Z[j][i]-zM[j]),0));
+  const ssR=y.reduce((s,v,i)=>s+(v-pred[i])**2,0);
+  const ssT=y.reduce((s,v)=>s+(v-yM)**2,0);
+  return {n:u.length,
+    coef:Object.fromEntries(FK.map((k,j)=>[k,coef[j]])),
+    mu:Object.fromEntries(FK.map((k,j)=>[k,mu[j]])),
+    sg:Object.fromEntries(FK.map((k,j)=>[k,sg[j]])),
+    r2:ssT?Math.max(0,1-ssR/ssT):0};
+}
+const crowdingOf=(nums,m)=>{
+  if(!m)return 0; const f=comboFeatures(nums);
+  return FK.reduce((s,k)=>s+m.coef[k]*((f[k]-m.mu[k])/m.sg[k]),0);
+};
+
+/* ═══════════════════════════════════════════════════════════════
+   توليد التركيبات
+   ═══════════════════════════════════════════════════════════════ */
+function generate(cands,scored,st,model,{tries=50000,keep=20,avoidCrowd=true}){
+  const byN=Object.fromEntries(scored.map(s=>[s.n,s]));
+  const sumM=mean(st.sums), sumS=sd(st.sums)||1;
+  const oddH=new Array(7).fill(0); st.odds.forEach(o=>oddH[o]++);
+  const lowH=new Array(7).fill(0); st.lows.forEach(l=>lowH[l]++);
+  const tot=st.odds.length||1;
+  const seen=new Set(), out=[];
+
+  for(let t=0;t<tries;t++){
+    const pool=[...cands], pick=[];
+    for(let z=0;z<PICK;z++)pick.push(pool.splice(Math.random()*pool.length|0,1)[0]);
+    pick.sort((a,b)=>a-b);
+    const key=pick.join(','); if(seen.has(key))continue; seen.add(key);
+
+    const f=comboFeatures(pick);
+    const numQ=mean(pick.map(n=>byN[n]?.score??50))/100;
+    const sumQ=Math.exp(-.5*((f.sum-sumM)/sumS)**2);
+    const oddQ=(oddH[f.odd]||0)/tot/.32;
+    const lowQ=(lowH[pick.filter(n=>n<=21).length]||0)/tot/.32;
+    let ps=0,pc=0;
+    for(let a=0;a<PICK;a++)for(let b=a+1;b<PICK;b++){ps+=pairCount(st,pick[a],pick[b]);pc++;}
+    const pairQ=pc?ps/pc:0;
+    const crowd=crowdingOf(pick,model);
+    const total=numQ*.40+sumQ*.18+Math.min(1,oddQ)*.12+Math.min(1,lowQ)*.10
+      +Math.min(1,pairQ/12)*.20-Math.max(0,f.consec-1)*.12
+      -(avoidCrowd?crowd*.35:0);
+    out.push({nums:pick,total,numQ,sumQ,oddQ,lowQ,pairQ,crowd,f});
+  }
+  return out.sort((a,b)=>b.total-a.total).slice(0,keep);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   رسوم SVG — مبنية يدوياً، بلا أي مكتبة خارجية
+   ═══════════════════════════════════════════════════════════════ */
+function Bars({data,series,height=250,unit='',refLine,xLabel}){
+  const [hover,setHover]=useState(null);
+  const W=760,H=height,pad={t:14,r:12,b:38,l:44};
+  const iw=W-pad.l-pad.r, ih=H-pad.t-pad.b;
+  const max=Math.max(...data.flatMap(d=>series.map(s=>d[s.key]||0)),0.001);
+  const nice=Math.ceil(max/5)*5||max;
+  const bw=iw/data.length, gw=bw*.74/series.length;
+
+  return (
+    <div style={{position:'relative'}}>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{width:'100%',height:'auto',display:'block',direction:'ltr'}}>
+        {[0,.25,.5,.75,1].map(t=>(
+          <g key={t}>
+            <line x1={pad.l} x2={W-pad.r} y1={pad.t+ih*(1-t)} y2={pad.t+ih*(1-t)}
+              stroke={C.line} strokeWidth="1"/>
+            <text x={pad.l-7} y={pad.t+ih*(1-t)+4} fill={C.faint} fontSize="10"
+              textAnchor="end" fontFamily={mono}>{(nice*t).toFixed(nice<10?1:0)}{unit}</text>
+          </g>
+        ))}
+        {refLine!=null&&refLine<=nice&&(
+          <line x1={pad.l} x2={W-pad.r} y1={pad.t+ih*(1-refLine/nice)} y2={pad.t+ih*(1-refLine/nice)}
+            stroke={C.amber} strokeDasharray="5 4" strokeWidth="1.2"/>
+        )}
+        {data.map((d,i)=>(
+          <g key={i} onMouseEnter={()=>setHover(i)} onMouseLeave={()=>setHover(null)}>
+            <rect x={pad.l+bw*i} y={pad.t} width={bw} height={ih}
+              fill={hover===i?'#ffffff08':'transparent'}/>
+            {series.map((s,j)=>{
+              const v=d[s.key]||0, h=Math.max(0,ih*(v/nice));
+              return <rect key={j} x={pad.l+bw*i+bw*.13+gw*j} y={pad.t+ih-h}
+                width={gw*.9} height={h} fill={s.color} rx="1.5"/>;
+            })}
+            <text x={pad.l+bw*i+bw/2} y={H-pad.b+15} fill={C.faint} fontSize="10.5"
+              textAnchor="middle" fontFamily={mono}>{d.k}</text>
+          </g>
+        ))}
+        {xLabel&&<text x={pad.l+iw/2} y={H-6} fill={C.faint} fontSize="10.5" textAnchor="middle">{xLabel}</text>}
+      </svg>
+      <div style={{display:'flex',gap:16,justifyContent:'center',flexWrap:'wrap',
+                   fontSize:11.5,color:C.dim,marginTop:4}}>
+        {series.map((s,j)=>(
+          <span key={j} style={{display:'flex',alignItems:'center',gap:6}}>
+            <i style={{width:10,height:10,background:s.color,borderRadius:2,display:'inline-block'}}/>
+            {s.label}
+            {hover!=null&&<b style={{fontFamily:mono,color:s.color}}>{data[hover][s.key]}{unit}</b>}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function HBars({data,color=C.cyan,domain,fmt=(v)=>v}){
+  const max=domain?Math.max(...domain.map(Math.abs)):Math.max(...data.map(d=>Math.abs(d.v)),.001);
+  const hasNeg=data.some(d=>d.v<0);
+  return (
+    <div>
+      {data.map((d,i)=>(
+        <div key={i} style={{display:'flex',alignItems:'center',gap:10,marginBottom:7}}>
+          <div style={{width:132,fontSize:11,color:C.dim,textAlign:'left',
+                       flexShrink:0,lineHeight:1.4}}>{d.name}</div>
+          <div style={{flex:1,height:16,background:C.panel2,borderRadius:2,
+                       position:'relative',overflow:'hidden'}}>
+            {hasNeg&&<div style={{position:'absolute',left:'50%',top:0,bottom:0,
+                                  width:1,background:C.faint}}/>}
+            <div style={{position:'absolute',top:2,bottom:2,borderRadius:2,
+              background:d.v<0?C.cyan:color,
+              left:hasNeg?(d.v<0?`${50-Math.abs(d.v)/max*50}%`:'50%'):'0',
+              width:hasNeg?`${Math.abs(d.v)/max*50}%`:`${Math.abs(d.v)/max*100}%`}}/>
+          </div>
+          <div style={{width:56,fontFamily:mono,fontSize:11,
+                       color:d.v<0?C.cyan:color,textAlign:'left'}}>{fmt(d.v)}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   عناصر الواجهة
+   ═══════════════════════════════════════════════════════════════ */
+const Ball=({n,tone='ink',size=38,faded})=>{
+  const t={ink:C.ink,cyan:C.cyan,amber:C.amber,red:C.red,violet:C.violet}[tone]||C.ink;
+  return <span style={{display:'inline-flex',alignItems:'center',justifyContent:'center',
+    width:size,height:size,borderRadius:'50%',border:`1.5px solid ${faded?C.line:t}`,
+    color:faded?C.faint:t,background:faded?'transparent':`${t}12`,fontFamily:mono,
+    fontSize:size*.4,fontWeight:600,flexShrink:0}}>{pad(n)}</span>;
+};
+
+const Panel=({title,sub,children,accent})=>(
+  <section style={{background:C.panel,border:`1px solid ${C.line}`,borderRadius:6,
+    padding:'18px 20px',marginBottom:16,borderTop:accent?`2px solid ${accent}`:`1px solid ${C.line}`}}>
+    {title&&<header style={{marginBottom:14}}>
+      <h3 style={{margin:0,fontSize:14,fontWeight:700}}>{title}</h3>
+      {sub&&<p style={{margin:'5px 0 0',fontSize:12,color:C.dim,lineHeight:1.65}}>{sub}</p>}
+    </header>}
+    {children}
+  </section>
+);
+
+const Stat=({label,value,unit,tone})=>(
+  <div style={{flex:'1 1 118px',minWidth:105}}>
+    <div style={{fontSize:10.5,color:C.dim,marginBottom:5}}>{label}</div>
+    <div style={{fontFamily:mono,fontSize:20,fontWeight:600,color:tone||C.ink,lineHeight:1}}>
+      {value}<span style={{fontSize:11,color:C.faint,marginRight:3}}>{unit}</span></div>
+  </div>
+);
+
+const Btn=({children,onClick,active,disabled,tone})=>(
+  <button onClick={onClick} disabled={disabled} style={{
+    background:active?`${tone||C.cyan}1A`:'transparent',
+    border:`1px solid ${active?(tone||C.cyan):C.line}`,
+    color:disabled?C.faint:active?(tone||C.cyan):C.dim,
+    padding:'7px 14px',borderRadius:4,fontSize:12.5,
+    cursor:disabled?'not-allowed':'pointer',fontWeight:500}}>{children}</button>
+);
+
+/* ═══════════════════════════════════════════════════════════════ */
+function App(){
+  const [draws,setDraws]=useState(null);
+  const [loadErr,setLoadErr]=useState('');
+  const [meta,setMeta]=useState(null);
+  const [tab,setTab]=useState('dash');
+  const [weights,setWeights]=useState(DEFAULT_W);
+  const [bt,setBt]=useState(null);
+  const [btRange,setBtRange]=useState(null);
+  const [busy,setBusy]=useState('');
+  const [poolSize,setPoolSize]=useState(6);
+  const [avoidCrowd,setAvoidCrowd]=useState(true);
+  const [combos,setCombos]=useState(null);
+  const [open,setOpen]=useState(null);
+  const [opt,setOpt]=useState(null);
+  const fileRef=useRef();
+
+  /* التحميل التلقائي من ملف الأرشيف المنشور مع الموقع */
+  useEffect(()=>{
+    fetch('./draws.json?v='+Date.now())
+      .then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+      .then(j=>{
+        const rows=(Array.isArray(j)?j:j.draws||[])
+          .filter(d=>Array.isArray(d.numbers)&&d.numbers.length===PICK)
+          .map(d=>({...d,numbers:[...d.numbers].sort((a,b)=>a-b)}))
+          .sort((a,b)=>a.n-b.n);
+        if(!rows.length)throw new Error('الملف لا يحتوي سحوبات صالحة.');
+        setDraws(rows); setMeta({fetchedAt:j.fetchedAt,source:j.source});
+      })
+      .catch(e=>setLoadErr(e.message));
+  },[]);
+
+  const loadFile=f=>f.text().then(t=>{
+    try{
+      const j=JSON.parse(t);
+      const rows=(Array.isArray(j)?j:j.draws||[])
+        .filter(d=>Array.isArray(d.numbers)&&d.numbers.length===PICK)
+        .map(d=>({...d,numbers:[...d.numbers].sort((a,b)=>a-b)}))
+        .sort((a,b)=>a.n-b.n);
+      if(!rows.length)throw new Error('لم يُقرأ أي سحب صالح.');
+      setDraws(rows); setMeta({fetchedAt:j.fetchedAt,source:j.source}); setLoadErr('');
+    }catch(e){setLoadErr(e.message);}
+  });
+
+  const live=useMemo(()=>{
+    if(!draws)return null;
+    const st=newState(); draws.forEach(d=>absorb(st,d));
+    const last=draws[draws.length-1], prev=draws[draws.length-2];
+    const nextIsMon=new Date(last.date+'T00:00:00').getDay()!==1;
+    const scored=scoreNumbers(st,last.numbers,prev?.numbers,weights,nextIsMon)
+      .sort((a,b)=>b.score-a.score);
+    const bands=classify(numberMetrics(st));
+    return {st,scored,bands,bandMap:Object.fromEntries(bands.map(b=>[b.n,b.band])),last,prev};
+  },[draws,weights]);
+
+  const overlaps=useMemo(()=>{
+    if(!draws)return null;
+    const o1=new Array(7).fill(0),o2=new Array(7).fill(0);
+    for(let i=1;i<draws.length;i++){
+      const cur=new Set(draws[i].numbers);
+      o1[draws[i-1].numbers.filter(n=>cur.has(n)).length]++;
+      if(i>=2)o2[draws[i-2].numbers.filter(n=>cur.has(n)).length]++;
+    }
+    const t1=o1.reduce((a,b)=>a+b,0),t2=o2.reduce((a,b)=>a+b,0);
+    return {rows:o1.map((_,k)=>({k:String(k),
+        prev:+(o1[k]/t1*100).toFixed(2),
+        prev2:+(o2[k]/t2*100).toFixed(2),
+        theo:+(hyper(k)*100).toFixed(2)})),
+      n1:t1,mean1:o1.reduce((s,c,k)=>s+c*k,0)/t1,mean2:o2.reduce((s,c,k)=>s+c*k,0)/t2};
+  },[draws]);
+
+  const crowd=useMemo(()=>draws?fitCrowding(draws):null,[draws]);
+
+  const runBt=async r=>{
+    setBusy('نُشغّل الاختبار سحبة بسحبة…'); setBtRange(r);
+    await new Promise(x=>setTimeout(x,30));
+    const to=draws.length, from=r==='all'?200:Math.max(200,to-r);
+    setBt(backtest(draws,weights,{from,to,poolSize})); setBusy('');
+  };
+
+  const runOpt=async()=>{
+    setBusy('نجرّب أوزاناً على التدريب، ثم نختبرها على بيانات لم يرها النموذج…');
+    await new Promise(x=>setTimeout(x,30));
+    const n=draws.length, trainTo=Math.floor(n*.7), trials=[];
+    for(let t=0;t<20;t++){
+      const w=Object.fromEntries(FILTERS.map(f=>[f.id,t===0?1:Math.random()*2]));
+      trials.push({w,train:backtest(draws,w,{from:Math.max(200,trainTo-400),to:trainTo,poolSize}).engMean});
+    }
+    trials.sort((a,b)=>b.train-a.train);
+    setOpt({best:trials[0],
+      test:backtest(draws,trials[0].w,{from:trainTo,to:n,poolSize}),
+      baseTest:backtest(draws,DEFAULT_W,{from:trainTo,to:n,poolSize}),
+      trials:trials.length});
+    setBusy('');
+  };
+
+  const runGen=async()=>{
+    setBusy('نولّد التركيبات ونقيّمها…');
+    await new Promise(x=>setTimeout(x,30));
+    setCombos(generate(live.scored.slice(0,22).map(s=>s.n),live.scored,live.st,crowd,{avoidCrowd}));
+    setBusy('');
+  };
+
+  /* ── شاشة الانتظار / الخطأ ────────────────────────────────── */
+  if(!draws) return (
+    <div style={{maxWidth:640,margin:'70px auto',padding:20}}>
+      <div style={{fontFamily:mono,fontSize:11,color:C.cyan,letterSpacing:'.14em',marginBottom:10}}>
+        LOTO 6/42 · بيروت</div>
+      <h1 style={{fontSize:25,margin:'0 0 12px',lineHeight:1.35}}>
+        {loadErr?'الأرشيف غير متاح بعد':'نقرأ الأرشيف…'}</h1>
+      {loadErr&&<>
+        <p style={{color:C.dim,fontSize:13.5,lineHeight:1.85}}>
+          لم يُعثر على <code style={{color:C.cyan}}>draws.json</code> بجانب الصفحة ({loadErr}).
+          إن كنت تنشر الموقع لأول مرة، شغّل مهمة التحديث في GitHub مرة واحدة يدوياً، أو ارفع الملف هنا مؤقتاً.
+        </p>
+        <input ref={fileRef} type="file" accept=".json" style={{display:'none'}}
+          onChange={e=>{const f=e.target.files?.[0];if(f)loadFile(f);}}/>
+        <button onClick={()=>fileRef.current?.click()} style={{background:`${C.cyan}18`,
+          border:`1px solid ${C.cyan}`,color:C.cyan,padding:'11px 22px',borderRadius:4,
+          fontSize:13.5,fontWeight:600,cursor:'pointer'}}>ارفع draws.json يدوياً</button>
+      </>}
+    </div>
+  );
+
+  const {st,scored,bands,bandMap,last,prev}=live;
+  const byBand=b=>bands.filter(x=>x.band===b).sort((x,y)=>y.since-x.since);
+
+  /* سلسلة التصفية */
+  const funnel=(()=>{
+    let pool=scored.map(s=>s.n);
+    const steps=[{label:'كل الأرقام',n:POOL,note:'نقطة البداية'}];
+    const p1=new Set(last.numbers), p2=new Set(prev?.numbers||[]);
+    const S=n=>scored.find(s=>s.n===n).score;
+    const thin=(label,fn,note)=>{pool=pool.filter(fn);steps.push({label,n:pool.length,note});};
+    thin('استبعاد أضعف 12٪ بالدرجة الكلية',n=>scored.findIndex(s=>s.n===n)<POOL-5,'ترتيب مجمّع');
+    thin('خفض وزن أرقام السحب السابق',n=>!(p1.has(n)&&S(n)<45),`${last.numbers.length} أرقام مرشّحة`);
+    thin('خفض وزن أرقام السحب قبل السابق',n=>!(p2.has(n)&&S(n)<40),'نفس المنطق');
+    thin('عتبة بعد التصنيف الحراري',n=>S(n)>22,'مشتقّة من التوزيع');
+    steps.push({label:'مجموعة المرشحين',n:Math.min(22,pool.length),note:'مدخل مولّد التركيبات'});
+    return steps;
+  })();
+
+  const TABS=[['dash','اللوحة'],['filters','الفرضيات'],['numbers','الأرقام'],
+              ['combos','التركيبات'],['back','Backtesting'],['crowd','الازدحام']];
+  const sig=bt&&Math.abs(bt.engMean-bt.rndMean)>2*bt.stderr;
+
+  return (
+    <div>
+      <header style={{borderBottom:`1px solid ${C.line}`,padding:'13px 18px',display:'flex',
+        flexWrap:'wrap',gap:14,alignItems:'center',background:C.panel2,position:'sticky',top:0,zIndex:20}}>
+        <div>
+          <div style={{fontFamily:mono,fontSize:10,color:C.cyan,letterSpacing:'.16em'}}>LOTO 6/42</div>
+          <div style={{fontSize:14.5,fontWeight:700,marginTop:2}}>محرك التحليل والتصفية</div>
+        </div>
+        <div style={{marginRight:'auto',display:'flex',gap:18,flexWrap:'wrap',fontSize:11,color:C.dim}}>
+          <span>السحوبات <b style={{fontFamily:mono,color:C.ink,fontSize:13}}>{draws.length}</b></span>
+          <span>آخر سحب <b style={{fontFamily:mono,color:C.ink,fontSize:13}}>#{last.n}</b></span>
+          <span>التاريخ <b style={{fontFamily:mono,color:C.ink,fontSize:13}}>{last.date}</b></span>
+          {meta?.fetchedAt&&<span>آخر تحديث <b style={{fontFamily:mono,color:C.ink}}>
+            {meta.fetchedAt.slice(0,10)}</b></span>}
+        </div>
+      </header>
+
+      <nav className="tabbar" style={{display:'flex',gap:2,padding:'9px 14px 0',
+        borderBottom:`1px solid ${C.line}`,overflowX:'auto',background:C.panel2}}>
+        {TABS.map(([id,l])=>(
+          <button key={id} onClick={()=>setTab(id)} style={{background:'transparent',border:'none',
+            borderBottom:`2px solid ${tab===id?C.cyan:'transparent'}`,color:tab===id?C.ink:C.dim,
+            padding:'9px 14px',fontSize:13,cursor:'pointer',fontWeight:tab===id?600:400,
+            whiteSpace:'nowrap'}}>{l}</button>
+        ))}
+      </nav>
+
+      {busy&&<div style={{background:`${C.amber}14`,borderBottom:`1px solid ${C.amber}55`,
+        color:C.amber,padding:'9px 18px',fontSize:12.5}}>{busy}</div>}
+
+      <main style={{maxWidth:1040,margin:'0 auto',padding:'20px 16px 56px'}}>
+
+      {tab==='dash'&&<>
+        <Panel title={`السحب ${last.n} — ${last.date}`} sub="آخر نتيجة في الأرشيف" accent={C.cyan}>
+          <div style={{display:'flex',gap:9,flexWrap:'wrap',alignItems:'center'}}>
+            {last.numbers.map(n=><Ball key={n} n={n} size={46} tone="cyan"/>)}
+            {last.bonus!=null&&<>
+              <span style={{color:C.faint,margin:'0 5px',fontSize:18}}>+</span>
+              <Ball n={last.bonus} size={46} tone="amber"/></>}
+          </div>
+        </Panel>
+
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))',gap:16}}>
+          {[['🔥 ساخنة','hot','red'],['❄️ باردة','cold','violet'],
+            ['🥶 باردة جداً','vcold','cyan'],['⏳ الأكثر تأخراً',null,'amber']].map(([t,b,tone])=>{
+            const list=b?byBand(b).slice(0,10)
+              :[...bands].sort((x,y)=>y.overdue-x.overdue).slice(0,10);
+            return <Panel key={t} title={t} sub={b==='vcold'
+              ?`${byBand('vcold').length} رقماً في هذه الفئة الآن`
+              :b?`${list.length} من ${byBand(b).length}`:'نسبة الغياب إلى المتوسط'}>
+              <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+                {list.map(m=><div key={m.n} style={{textAlign:'center'}}>
+                  <Ball n={m.n} size={34} tone={tone}/>
+                  <div style={{fontFamily:mono,fontSize:9.5,color:C.faint,marginTop:3}}>
+                    {b?m.since:m.overdue.toFixed(1)+'×'}</div>
+                </div>)}
+              </div>
+            </Panel>;
+          })}
+        </div>
+
+        <Panel title="سلسلة التصفية" sub="كيف تقلّصت مجموعة الأرقام، خطوة بخطوة" accent={C.violet}>
+          {funnel.map((s,i)=>(
+            <div key={i} style={{display:'flex',alignItems:'center',gap:12,marginBottom:6}}>
+              <div style={{width:40,textAlign:'left',fontFamily:mono,fontSize:17,fontWeight:600,
+                color:i===funnel.length-1?C.violet:C.ink}}>{s.n}</div>
+              <div style={{height:22,width:`${s.n/POOL*58}%`,minWidth:20,borderRadius:2,
+                background:`linear-gradient(90deg,${C.violet}${i===funnel.length-1?'55':'22'},transparent)`,
+                borderRight:`2px solid ${i===funnel.length-1?C.violet:C.line}`}}/>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:12.5}}>{s.label}</div>
+                <div style={{fontSize:10.5,color:C.faint}}>{s.note}</div>
+              </div>
+            </div>
+          ))}
+        </Panel>
+
+        <Panel accent={C.amber}>
+          <p style={{margin:0,fontSize:12.5,color:C.dim,lineHeight:1.9}}>
+            هذا النظام يحلّل البيانات التاريخية والأنماط الإحصائية فقط، ولا يمكنه ضمان نتيجة السحب القادم.
+            سحوبات اللوتو مستقلة إحصائياً — الكرات تُعاد إلى الماكينة بين سحب وآخر — لذا التوقّع الرياضي لأي
+            تذكرة من 6 أرقام هو <b style={{fontFamily:mono,color:C.amber}}>{BASE_EV.toFixed(3)}</b> رقم صحيح،
+            مهما كانت طريقة الاختيار. تبويب Backtesting يقيس هذا على أرشيفك أنت.
+          </p>
+        </Panel>
+      </>}
+
+      {tab==='filters'&&overlaps&&<>
+        <Panel title="فرضياتك مقابل الأرشيف"
+          sub={`محسوبة على ${overlaps.n1} زوج سحوبات متتالية — بلا أي رقم مُفترض`} accent={C.cyan}>
+          <div style={{display:'flex',gap:20,flexWrap:'wrap',marginBottom:16}}>
+            <Stat label="متوسط التكرار من السحب السابق" value={overlaps.mean1.toFixed(3)} unit="رقم" tone={C.cyan}/>
+            <Stat label="متوسط التكرار من قبل السابق" value={overlaps.mean2.toFixed(3)} unit="رقم" tone={C.violet}/>
+            <Stat label="المتوقع نظرياً" value={BASE_EV.toFixed(3)} unit="رقم" tone={C.amber}/>
+          </div>
+          <Bars data={overlaps.rows} unit="%" xLabel="عدد الأرقام المتكررة" series={[
+            {key:'prev',label:'السحب السابق',color:C.cyan},
+            {key:'prev2',label:'قبل السابق',color:C.violet},
+            {key:'theo',label:'النظري',color:C.amber}]}/>
+          <p style={{fontSize:12.5,color:C.dim,lineHeight:1.9,marginTop:14,marginBottom:0}}>
+            الأعمدة الثلاثة تكاد تتطابق. السحب السابق وقبل السابق يسلكان سلوكاً واحداً، وكلاهما يطابق
+            التوزيع الهندسي الفوقي للسحب المستقل. لا أثر في الأرشيف لأي «ذاكرة» بين السحوبات.
+          </p>
+        </Panel>
+
+        <Panel title="لماذا تبدو كل الفلاتر ناجحة" sub="نسبة النجاح مقابل القوة التنبؤية">
+          <table style={{width:'100%',fontSize:12.5}}>
+            <thead><tr style={{color:C.dim,textAlign:'right'}}>
+              {['القاعدة','نسبة «النجاح»','ما تستبعده','قيمتها'].map(h=>
+                <th key={h} style={{padding:'9px 10px',borderBottom:`1px solid ${C.line}`,fontWeight:500}}>{h}</th>)}
+            </tr></thead>
+            <tbody>
+              {[['لا تتكرر 4 أرقام فأكثر',4],['لا تتكرر 3 أرقام فأكثر',3],['لا يتكرر رقمان فأكثر',2]]
+                .map(([rule,k])=>{
+                const s=overlaps.rows.slice(0,k).reduce((a,r)=>a+r.prev,0);
+                return <tr key={rule}>
+                  <td style={{padding:'9px 10px',borderBottom:`1px solid ${C.line}`}}>{rule}</td>
+                  <td style={{padding:'9px 10px',borderBottom:`1px solid ${C.line}`,fontFamily:mono,
+                    color:s>90?C.cyan:C.amber}}>{s.toFixed(1)}%</td>
+                  <td style={{padding:'9px 10px',borderBottom:`1px solid ${C.line}`,fontFamily:mono,
+                    color:C.dim}}>{(100-s).toFixed(1)}%</td>
+                  <td style={{padding:'9px 10px',borderBottom:`1px solid ${C.line}`,color:C.faint}}>
+                    {s>95?'رقم لامع، أثر معدوم':'يستبعد حالات شائعة'}</td>
+                </tr>;
+              })}
+            </tbody>
+          </table>
+          <p style={{fontSize:12.5,color:C.dim,lineHeight:1.9,marginTop:14,marginBottom:0}}>
+            «نجاح 99٪» هنا ليس دليل ذكاء الفلتر بل انعكاس للمعدل القاعدي. القاعدة التي تستبعد 1٪ من
+            الاحتمالات تبدو ناجحة 99٪ وهي لا تفعل شيئاً. المقياس المعتبر الوحيد هو متوسط الإصابات
+            في Backtesting مقارنةً بالعشوائي.
+          </p>
+        </Panel>
+
+        <Panel title="فجوات الأرقام" sub="هل «التأخر» يعني اقتراب الظهور؟">
+          <Bars height={220} data={bands.map(b=>({k:b.n%3===0?String(b.n):'',since:b.since}))}
+            refLine={POOL/PICK} series={[{key:'since',label:'سحوبات منذ آخر ظهور',color:C.cyan}]}/>
+          <p style={{fontSize:12.5,color:C.dim,lineHeight:1.9,marginTop:14,marginBottom:0}}>
+            الخط المتقطّع هو المتوسط النظري ({(POOL/PICK).toFixed(0)} سحوبات). توزيع الفجوات هندسي
+            و<b style={{color:C.ink}}>عديم الذاكرة</b>: احتمال ظهور رقم غائب منذ 60 سحبة في السحب
+            القادم يساوي بالضبط احتمال رقم ظهر أمس —
+            <b style={{fontFamily:mono,color:C.amber}}> {(PICK/POOL*100).toFixed(1)}%</b>.
+          </p>
+        </Panel>
+      </>}
+
+      {tab==='numbers'&&<>
+        <Panel title="أوزان الفلاتر" sub="عدّلها لترى أثرها فوراً، ثم اختبرها في Backtesting">
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:14}}>
+            {FILTERS.map(f=>(
+              <div key={f.id}>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:11.5,marginBottom:5}}>
+                  <span>{f.label}</span>
+                  <span style={{fontFamily:mono,color:C.cyan}}>{weights[f.id].toFixed(2)}</span>
+                </div>
+                <input type="range" min="0" max="2" step="0.05" value={weights[f.id]}
+                  onChange={e=>setWeights({...weights,[f.id]:+e.target.value})} style={{width:'100%'}}/>
+              </div>
+            ))}
+          </div>
+          <div style={{marginTop:14,display:'flex',gap:8,flexWrap:'wrap'}}>
+            <Btn onClick={()=>setWeights(DEFAULT_W)}>إعادة الضبط</Btn>
+            <Btn onClick={runOpt} active tone={C.violet}>تحسين الأوزان (تحقق مُتقدِّم)</Btn>
+          </div>
+        </Panel>
+
+        {opt&&<Panel title="نتيجة التحسين"
+          sub={`${opt.trials} مجموعة أوزان · تدريب على أول 70٪ · اختبار على آخر 30٪ لم يرها النموذج`}
+          accent={C.violet}>
+          <div style={{display:'flex',gap:20,flexWrap:'wrap',marginBottom:14}}>
+            <Stat label="على بيانات التدريب" value={opt.best.train.toFixed(3)} unit="إصابة" tone={C.violet}/>
+            <Stat label="على بيانات الاختبار" value={opt.test.engMean.toFixed(3)} unit="إصابة" tone={C.cyan}/>
+            <Stat label="الأوزان الافتراضية" value={opt.baseTest.engMean.toFixed(3)} unit="إصابة"/>
+            <Stat label="العشوائي" value={opt.test.rndMean.toFixed(3)} unit="إصابة" tone={C.amber}/>
+          </div>
+          <p style={{fontSize:12.5,color:C.dim,lineHeight:1.9,margin:0}}>
+            الفرق بين عمود التدريب وعمود الاختبار هو مقدار الـOverfitting. إذا تفوّق التدريب بوضوح
+            بينما تساوى الاختبار مع العشوائي، فالمُحسِّن وجد ضجيجاً لا إشارة — وهذا السلوك المتوقّع
+            لأي بحث عن أنماط في سلسلة مستقلة.
+          </p>
+        </Panel>}
+
+        <Panel title="الأرقام مرتّبة بالدرجة" sub="اضغط أي رقم لترى تفكيك درجته">
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(56px,1fr))',gap:8}}>
+            {scored.map((s,i)=>{
+              const tone=bandMap[s.n]==='hot'?'red':bandMap[s.n]==='vcold'?'cyan'
+                :bandMap[s.n]==='cold'?'violet':'ink';
+              return <button key={s.n} onClick={()=>setOpen({single:s})} style={{
+                background:i<22?`${C.cyan}0A`:'transparent',
+                border:`1px solid ${i<22?C.line:'transparent'}`,borderRadius:5,
+                padding:'8px 3px',cursor:'pointer'}}>
+                <Ball n={s.n} size={32} tone={tone} faded={i>=22}/>
+                <div style={{fontFamily:mono,fontSize:10,marginTop:4,
+                  color:i<22?C.cyan:C.faint}}>{s.score.toFixed(0)}</div>
+              </button>;
+            })}
+          </div>
+          <p style={{fontSize:11.5,color:C.faint,marginTop:12,marginBottom:0}}>
+            الـ22 الأولى تشكّل مجموعة المرشحين. الدرجة ترتيب نسبي داخل هذا السحب — ليست احتمالاً.
+          </p>
+        </Panel>
+
+        {open?.single&&<Panel title={`تفكيك درجة الرقم ${open.single.n}`} accent={C.cyan}>
+          <div style={{display:'flex',gap:18,flexWrap:'wrap',marginBottom:18}}>
+            <Stat label="مرات الظهور" value={open.single.freq}/>
+            <Stat label="سحوبات منذ آخر ظهور" value={open.single.since} tone={C.cyan}/>
+            <Stat label="متوسط الفجوة" value={open.single.meanGap.toFixed(1)}/>
+            <Stat label="وسيط الفجوة" value={open.single.medGap}/>
+            <Stat label="أطول غياب" value={open.single.maxGap}/>
+            <Stat label="الانحراف المعياري" value={open.single.sdGap.toFixed(1)}/>
+            <Stat label="التأخر النسبي" value={open.single.overdue.toFixed(2)} unit="×" tone={C.amber}/>
+          </div>
+          <HBars domain={[0,100]} fmt={v=>v.toFixed(0)}
+            data={FILTERS.map(f=>({name:f.label,v:open.single.parts[f.id]}))}/>
+          <div style={{marginTop:12}}><Btn onClick={()=>setOpen(null)}>إغلاق</Btn></div>
+        </Panel>}
+      </>}
+
+      {tab==='combos'&&<>
+        <Panel title="توليد التركيبات" sub="50 ألف تركيبة من مجموعة المرشحين، مُقيَّمة ومُرتَّبة" accent={C.violet}>
+          <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'center'}}>
+            <Btn onClick={runGen} active tone={C.violet}>ولّد وقيّم</Btn>
+            <Btn onClick={()=>setAvoidCrowd(!avoidCrowd)} active={avoidCrowd} tone={C.amber}>
+              {avoidCrowd?'✓ ':''}تجنّب التركيبات المزدحمة</Btn>
+            {crowd&&<span style={{fontSize:11.5,color:C.faint}}>
+              نموذج الازدحام: {crowd.n} سحبة · R² = {crowd.r2.toFixed(3)}</span>}
+          </div>
+        </Panel>
+
+        {combos?.map((c,i)=>(
+          <Panel key={i}>
+            <div style={{display:'flex',gap:12,flexWrap:'wrap',alignItems:'center'}}>
+              <div style={{fontFamily:mono,fontSize:12,color:C.faint,width:30}}>#{i+1}</div>
+              <div style={{display:'flex',gap:7}}>
+                {c.nums.map(n=><Ball key={n} n={n} size={38} tone="violet"/>)}</div>
+              <div style={{marginRight:'auto',display:'flex',gap:14,flexWrap:'wrap'}}>
+                <Stat label="الدرجة" value={(c.total*100).toFixed(1)} tone={C.violet}/>
+                <Stat label="المجموع" value={c.f.sum}/>
+                <Stat label="فردي/زوجي" value={`${c.f.odd}/${6-c.f.odd}`}/>
+                <Stat label="الازدحام" value={c.crowd.toFixed(2)} tone={c.crowd<0?C.cyan:C.amber}/>
+              </div>
+              <Btn onClick={()=>setOpen(open?.idx===i?null:{idx:i})}>
+                {open?.idx===i?'إخفاء':'لماذا؟'}</Btn>
+            </div>
+            {open?.idx===i&&<div style={{marginTop:16,paddingTop:16,borderTop:`1px solid ${C.line}`}}>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))',
+                gap:12,marginBottom:14}}>
+                <Stat label="جودة الأرقام" value={(c.numQ*100).toFixed(0)} unit="/100"/>
+                <Stat label="ملاءمة المجموع" value={(c.sumQ*100).toFixed(0)} unit="/100"/>
+                <Stat label="توازن فردي/زوجي" value={(Math.min(1,c.oddQ)*100).toFixed(0)} unit="/100"/>
+                <Stat label="تكرار الأزواج" value={c.pairQ.toFixed(1)} unit="مرة"/>
+                <Stat label="أرقام متتالية" value={c.f.consec}/>
+                <Stat label="أرقام ≤ 31" value={c.f.le31} tone={c.f.le31<=3?C.cyan:C.amber}/>
+              </div>
+              <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                {c.nums.map(n=>{const s=scored.find(x=>x.n===n);
+                  return <div key={n} style={{border:`1px solid ${C.line}`,borderRadius:4,
+                    padding:'7px 10px',fontSize:11}}>
+                    <b style={{fontFamily:mono,color:C.violet}}>{pad(n)}</b>
+                    <span style={{color:C.dim,marginRight:7}}>
+                      درجة {s.score.toFixed(0)} · غائب {s.since} · ظهر {s.freq}×</span>
+                  </div>;})}
+              </div>
+            </div>}
+          </Panel>
+        ))}
+        {!combos&&<p style={{color:C.faint,fontSize:12.5,textAlign:'center',padding:40}}>
+          اضغط «ولّد وقيّم» لبناء التركيبات من مجموعة المرشحين الحالية.</p>}
+      </>}
+
+      {tab==='back'&&<Panel title="اختبار المحرك على الماضي"
+        sub="عند تحليل السحب رقم X لا يُسمح للنموذج برؤية أي بيانات من X فما بعد" accent={C.cyan}>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:14,alignItems:'center'}}>
+          {[50,100,500,'all'].map(r=>(
+            <Btn key={r} onClick={()=>runBt(r)} active={btRange===r}>
+              {r==='all'?'كل الأرشيف':`آخر ${r}`}</Btn>))}
+          <span style={{marginRight:'auto',display:'flex',gap:6,alignItems:'center',
+            fontSize:12,color:C.dim}}>حجم الترشيح
+            {[6,10,15,22].map(p=>(
+              <Btn key={p} onClick={()=>setPoolSize(p)} active={poolSize===p} tone={C.violet}>{p}</Btn>))}
+          </span>
+        </div>
+
+        {bt?<>
+          <div style={{display:'flex',gap:18,flexWrap:'wrap',marginBottom:18}}>
+            <Stat label="المحرك — المتوسط" value={bt.engMean.toFixed(3)} unit="إصابة" tone={C.cyan}/>
+            <Stat label="العشوائي — المتوسط" value={bt.rndMean.toFixed(3)} unit="إصابة" tone={C.amber}/>
+            <Stat label="الفرق" value={(bt.engMean-bt.rndMean>=0?'+':'')+(bt.engMean-bt.rndMean).toFixed(3)}
+              tone={sig?C.cyan:C.faint}/>
+            <Stat label="حد الدلالة" value={'±'+(2*bt.stderr).toFixed(3)}/>
+            <Stat label="الوسيط" value={bt.engMedian}/>
+            <Stat label="أعلى نتيجة" value={bt.engMax} unit={`/${bt.poolSize}`}/>
+            <Stat label="سحوبات مُختبَرة" value={bt.count}/>
+          </div>
+
+          <div style={{border:`1px solid ${sig?C.cyan:C.amber}`,background:`${sig?C.cyan:C.amber}10`,
+            borderRadius:4,padding:'12px 16px',fontSize:12.5,lineHeight:1.85,marginBottom:18,
+            color:sig?C.cyan:C.amber}}>
+            {sig?'الفرق يتجاوز حدود الخطأ المعياري على هذه العيّنة. جرّب مدىً أطول ونطاقات مختلفة قبل الاعتماد عليه — الفروق التي تختفي عند تغيير النافذة هي ضجيج.'
+              :`الفرق بين المحرك والعشوائي داخل حدود الخطأ المعياري (±${(2*bt.stderr).toFixed(3)}). إحصائياً: لا يوجد تفوّق. هذه هي النتيجة الصادقة، وهي متوقّعة تماماً لسلسلة سحوبات مستقلة.`}
+          </div>
+
+          <Bars height={240} unit="%" xLabel="عدد الأرقام الصحيحة"
+            data={bt.engDist.map((v,k)=>({k:String(k),
+              eng:+(v/bt.count*100).toFixed(2), rnd:+(bt.rndDist[k]/bt.count*100).toFixed(2)}))}
+            series={[{key:'eng',label:'المحرك',color:C.cyan},{key:'rnd',label:'العشوائي',color:C.amber}]}/>
+
+          <div style={{overflowX:'auto',maxHeight:400,border:`1px solid ${C.line}`,
+            borderRadius:4,marginTop:18}}>
+            <table style={{width:'100%',fontSize:11.5}}>
+              <thead style={{position:'sticky',top:0,background:C.panel2}}>
+                <tr style={{color:C.dim,textAlign:'right'}}>
+                  {['السحب','التاريخ','المُرشَّح','الفعلي','إصابات','عشوائي'].map(h=>
+                    <th key={h} style={{padding:'9px 10px',borderBottom:`1px solid ${C.line}`,
+                      fontWeight:500,whiteSpace:'nowrap'}}>{h}</th>)}
+                </tr>
+              </thead>
+              <tbody style={{fontFamily:mono}}>
+                {[...bt.rows].reverse().slice(0,200).map(r=>(
+                  <tr key={r.n}>
+                    <td style={{padding:'7px 10px',borderBottom:`1px solid ${C.line}`,color:C.dim}}>{r.n}</td>
+                    <td style={{padding:'7px 10px',borderBottom:`1px solid ${C.line}`,color:C.faint}}>{r.date}</td>
+                    <td style={{padding:'7px 10px',borderBottom:`1px solid ${C.line}`,color:C.dim,
+                      direction:'ltr',textAlign:'right'}}>
+                      {r.pred.slice(0,8).map(pad).join(' ')}{r.pred.length>8?'…':''}</td>
+                    <td style={{padding:'7px 10px',borderBottom:`1px solid ${C.line}`,color:C.ink,
+                      direction:'ltr',textAlign:'right'}}>{r.actual.map(pad).join(' ')}</td>
+                    <td style={{padding:'7px 10px',borderBottom:`1px solid ${C.line}`,fontWeight:600,
+                      color:r.hit>=3?C.cyan:C.dim}}>{r.hit}</td>
+                    <td style={{padding:'7px 10px',borderBottom:`1px solid ${C.line}`,color:C.faint}}>{r.rHit}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>:<p style={{color:C.faint,fontSize:12.5,padding:'20px 0',margin:0}}>اختر مدىً لبدء الاختبار.</p>}
+      </Panel>}
+
+      {tab==='crowd'&&<>
+        <Panel title="الميزة الوحيدة القابلة للقياس"
+          sub="اللوتو اللبناني لعبة توزيع: الجائزة تُقسَّم على الفائزين" accent={C.amber}>
+          <p style={{fontSize:13,color:C.dim,lineHeight:1.95,margin:'0 0 16px'}}>
+            لا يمكن لأي نظام أن يرفع <b style={{color:C.ink}}>احتمال</b> فوزك — يبقى 1 من 5,245,786.
+            لكن يمكن رفع <b style={{color:C.ink}}>حصتك عند الفوز</b>، لأن التركيبات ليست متساوية الشعبية
+            بين اللاعبين. نقيس ذلك من عدد الفائزين بثلاثة أرقام في كل سحبة، منسوباً إلى وسيط السحوبات
+            المجاورة لتحييد تغيّر حجم المبيعات عبر السنين.
+          </p>
+          {crowd?<>
+            <div style={{display:'flex',gap:20,flexWrap:'wrap',marginBottom:18}}>
+              <Stat label="سحوبات بأعداد فائزين" value={crowd.n}/>
+              <Stat label="R² للنموذج" value={crowd.r2.toFixed(3)} tone={crowd.r2>.05?C.cyan:C.amber}/>
+            </div>
+            <HBars color={C.amber} fmt={v=>v.toFixed(3)}
+              data={FK.map(k=>({name:FK_LABEL[k],v:crowd.coef[k]}))}/>
+            <p style={{fontSize:12.5,color:C.dim,lineHeight:1.9,marginTop:14,marginBottom:0}}>
+              المعامل الموجب يعني: كلما زادت هذه الخاصية في الأرقام المسحوبة، زاد عدد الفائزين — أي أن
+              اللاعبين يميلون إليها. اختر عكسها لتقلّل احتمال مشاركة جائزتك. انتبه إلى R²: إذا كان
+              صغيراً فالأثر حقيقي لكنه ضعيف، ولا تبنِ عليه أكثر مما يحتمل.
+            </p>
+          </>:<p style={{fontSize:12.5,color:C.amber,margin:0,lineHeight:1.9}}>
+            الأرشيف لا يحتوي أعداد الفائزين بعد. مهمة التحديث في GitHub تلتقط حقل
+            <code style={{margin:'0 5px'}}>winners</code> من كل صفحة سحب.</p>}
+        </Panel>
+
+        <Panel title="ملاحظة على جودة المصدر">
+          <p style={{fontSize:12.5,color:C.dim,lineHeight:1.9,margin:0}}>
+            صفحات المصدر تعرض أعداد الفائزين في موضعين (جدول ونص)، ولوحظ اختلاف بينهما في بعض السحوبات.
+            السكرابر يأخذ أرقام النص. إن أردت دقة أعلى في هذا التبويب تحديداً، تحقّق من عيّنة يدوياً
+            قبل الاعتماد على المعاملات.
+          </p>
+        </Panel>
+      </>}
+      </main>
+
+      <footer style={{borderTop:`1px solid ${C.line}`,padding:'18px',textAlign:'center',
+        fontSize:11.5,color:C.faint,lineHeight:1.9}}>
+        هذا النظام يقوم بتحليل البيانات التاريخية والأنماط الإحصائية فقط، ولا يمكنه ضمان نتيجة السحب القادم.<br/>
+        اللعب مسؤولية شخصية — لا تلعب بأكثر مما يمكنك خسارته. المصدر: lebanon-lotto.com (غير رسمي).
+      </footer>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
