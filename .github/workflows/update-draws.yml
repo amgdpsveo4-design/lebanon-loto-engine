@@ -1,0 +1,39 @@
+name: تحديث أرشيف اللوتو
+
+on:
+  schedule:
+    # بعد سحب الاثنين وسحب الخميس (7:30 مساءً بتوقيت بيروت = 16:30 أو 17:30 UTC)
+    # نشغّلها 21:00 UTC لضمان نشر النتيجة على المصدر
+    - cron: '0 21 * * 1,4'
+  workflow_dispatch:        # يسمح بالتشغيل اليدوي من زر في GitHub
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: جلب المستودع
+        uses: actions/checkout@v4
+
+      - name: تجهيز Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: تشغيل السكرابر
+        run: node lotto-scraper.mjs
+
+      - name: حفظ التحديث
+        run: |
+          git config user.name  "loto-bot"
+          git config user.email "loto-bot@users.noreply.github.com"
+          git add draws.json
+          if git diff --staged --quiet; then
+            echo "لا سحوبات جديدة."
+          else
+            COUNT=$(node -e "console.log(JSON.parse(require('fs').readFileSync('draws.json')).count)")
+            git commit -m "تحديث الأرشيف — $COUNT سحبة"
+            git push
+          fi
